@@ -1,0 +1,637 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Generate project files
+        run: |
+          mkdir -p app/src/main/java/com/hastyar/freezetranslate
+          mkdir -p app/src/main/res/xml
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "FreezeImageOverlay"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g
+          android.useAndroidX=true
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.hastyar.freezetranslate"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.hastyar.freezetranslate"
+                  minSdk = 33
+                  targetSdk = 34
+                  versionCode = 2
+                  versionName = "2.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="accessibility_desc">Freeze Screen Overlay Tool</string>
+          </resources>
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="Screen Freezer v2"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".FreezeService"
+                      android:exported="true"
+                      android:label="Screen Freezer Service"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/xml/accessibility_config.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canTakeScreenshot="true"
+              android:notificationTimeout="100"
+              android:description="@string/accessibility_desc" />
+          EOF
+
+          cat > app/src/main/java/com/hastyar/freezetranslate/MainActivity.kt <<'EOF'
+          package com.hastyar.freezetranslate
+
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.View
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      layoutDirection = View.LAYOUT_DIRECTION_RTL
+                      setPadding(48, 120, 48, 48)
+                  }
+
+                  val info = TextView(this).apply {
+                      textSize = 16f
+                      text = "ڕێنمایی بەکارهێنانی وەشان v2.0:\n\n" +
+                              "١. دوگمەی (Display over other apps) هەڵبکە.\n\n" +
+                              "٢. مۆڵەتی Restricted settings هەڵبکە لە زانیاری بەرنامەکە.\n\n" +
+                              "٣. خزمەتگوزاری Accessibility چالاک بکە.\n\n" +
+                              "تایبەتمەندی دوگمە شناوەکان:\n" +
+                              "  • 📸 (وێنەگرتن): وێنەی نوێ دەگرێت.\n" +
+                              "  • 👁️ (لادان): وێنەکە شاراوە دەکات یان دەیهێنێتەوە.\n" +
+                              "  • 🌓 (شەفافیەت): وێنەکە تەڵخ/ڕوون دەکات تا دەقی وەرگێڕان بە ڕوونی دیار بێت!"
+                  }
+                  root.addView(info)
+
+                  addButton(root, "١. مۆڵەتی Display over other apps") {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                  }
+                  addButton(root, "٢. Restricted settings (زانیاری بەرنامە)") {
+                      startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                  }
+                  addButton(root, "٣. کردنەوەی Accessibility") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+                  addButton(root, "سڕینەوەی شوێنی دیاریکراو") {
+                      getSharedPreferences("region", Context.MODE_PRIVATE).edit().clear().apply()
+                      Toast.makeText(this, "شوێنەکە سڕایەوە", Toast.LENGTH_SHORT).show()
+                  }
+
+                  val sv = ScrollView(this)
+                  sv.addView(root)
+                  setContentView(sv)
+              }
+
+              private fun addButton(root: LinearLayout, text: String, onClick: () -> Unit) {
+                  val b = Button(this)
+                  b.text = text
+                  b.setOnClickListener { onClick() }
+                  root.addView(b)
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/hastyar/freezetranslate/FreezeService.kt <<'EOF'
+          package com.hastyar.freezetranslate
+
+          import android.accessibilityservice.AccessibilityService
+          import android.content.Context
+          import android.graphics.Bitmap
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.ColorSpace
+          import android.graphics.Paint
+          import android.graphics.PixelFormat
+          import android.graphics.Rect
+          import android.graphics.drawable.GradientDrawable
+          import android.hardware.HardwareBuffer
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.Settings
+          import android.view.Display
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.ImageView
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+          import java.util.concurrent.Executor
+
+          class FreezeService : AccessibilityService() {
+
+              private lateinit var wm: WindowManager
+              private val handler = Handler(Looper.getMainLooper())
+              private val myExecutor = Executor { command -> handler.post(command) }
+
+              private var controlPanel: LinearLayout? = null
+              private var capturedImageView: ImageView? = null
+              private var selector: SelectionView? = null
+
+              private var isImageVisible = false
+              private var currentBitmap: Bitmap? = null
+              private var currentAlpha = 1.0f
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  createControlPanel()
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              private fun createControlPanel() {
+                  if (controlPanel != null) return
+
+                  val panel = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(10, 10, 10, 10)
+                      elevation = 12f
+                  }
+
+                  val btnCapture = createFloatingButton("📸", Color.CYAN) {
+                      captureNewImage()
+                  }
+                  btnCapture.setOnLongClickListener {
+                      startSelection()
+                      true
+                  }
+
+                  val btnHideShow = createFloatingButton("👁️", Color.YELLOW) {
+                      toggleImageVisibility()
+                  }
+
+                  val btnAlpha = createFloatingButton("🌓", Color.GREEN) {
+                      cycleAlpha()
+                  }
+
+                  val params = LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                      setMargins(0, dp(4), 0, dp(4))
+                  }
+
+                  panel.addView(btnCapture, params)
+                  panel.addView(btnHideShow, params)
+                  panel.addView(btnAlpha, params)
+
+                  val (sw, _) = realSize()
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                              WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                              WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = sw - dp(60)
+                      y = dp(140)
+                      layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                  }
+
+                  panel.setOnTouchListener(object : View.OnTouchListener {
+                      private var initialX = 0
+                      private var initialY = 0
+                      private var initialTouchX = 0f
+                      private var initialTouchY = 0f
+
+                      override fun onTouch(v: View, event: MotionEvent): Boolean {
+                          when (event.action) {
+                              MotionEvent.ACTION_DOWN -> {
+                                  initialX = lp.x
+                                  initialY = lp.y
+                                  initialTouchX = event.rawX
+                                  initialTouchY = event.rawY
+                                  return false
+                              }
+                              MotionEvent.ACTION_MOVE -> {
+                                  val dx = (event.rawX - initialTouchX).toInt()
+                                  val dy = (event.rawY - initialTouchY).toInt()
+                                  if (Math.hypot(dx.toDouble(), dy.toDouble()) > 10) {
+                                      lp.x = initialX + dx
+                                      lp.y = initialY + dy
+                                      try { wm.updateViewLayout(v, lp) } catch (e: Exception) {}
+                                      return true
+                                  }
+                              }
+                          }
+                          return false
+                      }
+                  })
+
+                  try {
+                      wm.addView(panel, lp)
+                      controlPanel = panel
+                  } catch (e: Exception) {
+                      e.printStackTrace()
+                  }
+              }
+
+              private fun createFloatingButton(icon: String, strokeColor: Int, onClick: () -> Unit): TextView {
+                  return TextView(this).apply {
+                      text = icon
+                      textSize = 20f
+                      gravity = Gravity.CENTER
+                      background = GradientDrawable().apply {
+                          shape = GradientDrawable.OVAL
+                          setColor(0xBB1E1E2E.toInt())
+                          setStroke(dp(2), strokeColor)
+                      }
+                      alpha = 0.9f
+                      setPadding(dp(6), dp(6), dp(6), dp(6))
+                      setOnClickListener { onClick() }
+                  }
+              }
+
+              private fun cycleAlpha() {
+                  if (capturedImageView == null || currentBitmap == null) {
+                      Toast.makeText(this, "تکایە سەرەتا وێنەیەک بگرە", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+
+                  currentAlpha = when (currentAlpha) {
+                      1.0f -> 0.5f
+                      0.5f -> 0.25f
+                      0.25f -> 0.08f
+                      else -> 1.0f
+                  }
+
+                  capturedImageView?.alpha = currentAlpha
+                  val percent = (currentAlpha * 100).toInt()
+                  Toast.makeText(this, "شەفافییەتی وێنە: $percent%", Toast.LENGTH_SHORT).show()
+              }
+
+              private fun toggleImageVisibility() {
+                  if (capturedImageView == null || currentBitmap == null) {
+                      Toast.makeText(this, "تکایە سەرەتا وێنەیەک بگرە (📸)", Toast.LENGTH_SHORT).show()
+                      return
+                  }
+
+                  if (isImageVisible) {
+                      capturedImageView?.visibility = View.GONE
+                      isImageVisible = false
+                      Toast.makeText(this, "وێنەکە لادرا", Toast.LENGTH_SHORT).show()
+                  } else {
+                      capturedImageView?.visibility = View.VISIBLE
+                      isImageVisible = true
+                      Toast.makeText(this, "وێنەکە نیشاندرایەوە", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+              private fun realSize(): Pair<Int, Int> {
+                  val b = wm.maximumWindowMetrics.bounds
+                  return Pair(b.width(), b.height())
+              }
+
+              private fun orientationKey(): String {
+                  val (sw, sh) = realSize()
+                  return if (sw > sh) "land" else "port"
+              }
+
+              private fun saveRect(r: Rect) {
+                  val k = orientationKey()
+                  getSharedPreferences("region", Context.MODE_PRIVATE).edit()
+                      .putInt(k + "_l", r.left)
+                      .putInt(k + "_t", r.top)
+                      .putInt(k + "_r", r.right)
+                      .putInt(k + "_b", r.bottom)
+                      .apply()
+              }
+
+              private fun loadRect(): Rect? {
+                  val k = orientationKey()
+                  val p = getSharedPreferences("region", Context.MODE_PRIVATE)
+                  if (!p.contains(k + "_l")) return null
+                  return Rect(
+                      p.getInt(k + "_l", 0),
+                      p.getInt(k + "_t", 0),
+                      p.getInt(k + "_r", 0),
+                      p.getInt(k + "_b", 0)
+                  )
+              }
+
+              private fun startSelection() {
+                  if (selector != null) return
+                  val sv = SelectionView(this) { rect -> onSelected(rect) }
+                  val lp = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.MATCH_PARENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                              WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                              WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  )
+                  lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                  wm.addView(sv, lp)
+                  selector = sv
+              }
+
+              private fun onSelected(rect: Rect?) {
+                  selector?.let {
+                      try { wm.removeView(it) } catch (e: Exception) {}
+                  }
+                  selector = null
+                  if (rect == null || rect.width() < 20 || rect.height() < 20) return
+                  saveRect(rect)
+                  handler.postDelayed({ captureNewImage() }, 200)
+              }
+
+              private fun captureNewImage() {
+                  val rect = loadRect()
+                  if (rect == null) {
+                      startSelection()
+                      return
+                  }
+
+                  capturedImageView?.visibility = View.GONE
+
+                  handler.postDelayed({
+                      takeScreenshot(
+                          Display.DEFAULT_DISPLAY,
+                          myExecutor,
+                          object : AccessibilityService.TakeScreenshotCallback {
+                              override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                                  try {
+                                      val hb: HardwareBuffer = result.hardwareBuffer
+                                      val cs: ColorSpace? = result.colorSpace
+                                      val hw: Bitmap? = if (cs != null) {
+                                          Bitmap.wrapHardwareBuffer(hb, cs)
+                                      } else {
+                                          Bitmap.wrapHardwareBuffer(hb, ColorSpace.get(ColorSpace.Named.SRGB))
+                                      }
+                                      if (hw != null) {
+                                          val soft = hw.copy(Bitmap.Config.ARGB_8888, false)
+                                          hw.recycle()
+                                          if (soft != null) {
+                                              val r = Rect(rect)
+                                              if (r.intersect(0, 0, soft.width, soft.height)) {
+                                                  val crop = Bitmap.createBitmap(soft, r.left, r.top, r.width(), r.height())
+                                                  displayOverlayImage(crop, r)
+                                                  if (crop !== soft) soft.recycle()
+                                              } else {
+                                                  soft.recycle()
+                                              }
+                                          }
+                                      }
+                                      hb.close()
+                                  } catch (e: Exception) {
+                                      e.printStackTrace()
+                                  }
+                              }
+
+                              override fun onFailure(errorCode: Int) {
+                                  Toast.makeText(this@FreezeService, "نەتوانرا وێنە بگیرێت", Toast.LENGTH_SHORT).show()
+                              }
+                          }
+                      )
+                  }, 100)
+              }
+
+              private fun displayOverlayImage(bmp: Bitmap, r: Rect) {
+                  val old = currentBitmap
+                  currentBitmap = bmp
+
+                  val targetWindowType = if (Settings.canDrawOverlays(this)) {
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                  } else {
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+                  }
+
+                  if (capturedImageView == null) {
+                      val img = ImageView(this)
+                      img.scaleType = ImageView.ScaleType.FIT_XY
+
+                      val lp = WindowManager.LayoutParams(
+                          r.width(), r.height(),
+                          targetWindowType,
+                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                                  WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                                  WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                                  WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                          PixelFormat.TRANSLUCENT
+                      ).apply {
+                          gravity = Gravity.TOP or Gravity.START
+                          x = r.left
+                          y = r.top
+                          layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                      }
+
+                      wm.addView(img, lp)
+                      capturedImageView = img
+                  } else {
+                      val lp = capturedImageView!!.layoutParams as WindowManager.LayoutParams
+                      lp.type = targetWindowType
+                      lp.width = r.width()
+                      lp.height = r.height()
+                      lp.x = r.left
+                      lp.y = r.top
+                      wm.updateViewLayout(capturedImageView, lp)
+                  }
+
+                  capturedImageView?.setImageBitmap(bmp)
+                  capturedImageView?.alpha = currentAlpha
+                  capturedImageView?.visibility = View.VISIBLE
+                  isImageVisible = true
+                  old?.recycle()
+                  Toast.makeText(this, "وێنەکە بەسترا", Toast.LENGTH_SHORT).show()
+              }
+
+              override fun onDestroy() {
+                  handler.removeCallbacksAndMessages(null)
+                  controlPanel?.let { try { wm.removeView(it) } catch (e: Exception) {} }
+                  capturedImageView?.let { try { wm.removeView(it) } catch (e: Exception) {} }
+                  selector?.let { try { wm.removeView(it) } catch (e: Exception) {} }
+                  currentBitmap?.recycle()
+                  super.onDestroy()
+              }
+          }
+
+          class SelectionView(ctx: Context, private val onDone: (Rect?) -> Unit) : View(ctx) {
+              private val fill = Paint().apply { color = 0x3300FFFF }
+              private val border = Paint().apply {
+                  color = Color.CYAN
+                  style = Paint.Style.STROKE
+                  strokeWidth = 6f
+              }
+              private val hint = Paint().apply {
+                  color = Color.WHITE
+                  textSize = 44f
+                  textAlign = Paint.Align.CENTER
+                  isAntiAlias = true
+              }
+              private var x0 = 0f
+              private var y0 = 0f
+              private var x1 = 0f
+              private var y1 = 0f
+              private var has = false
+
+              init { setBackgroundColor(0x55000000) }
+
+              override fun onDraw(c: Canvas) {
+                  super.onDraw(c)
+                  c.drawText("شوێنی وێنەگرتن دیاری بکە", width / 2f, 150f, hint)
+                  if (has) {
+                      val l = minOf(x0, x1)
+                      val t = minOf(y0, y1)
+                      val r = maxOf(x0, x1)
+                      val b = maxOf(y0, y1)
+                      c.drawRect(l, t, r, b, fill)
+                      c.drawRect(l, t, r, b, border)
+                  }
+              }
+
+              override fun onTouchEvent(e: MotionEvent): Boolean {
+                  when (e.action) {
+                      MotionEvent.ACTION_DOWN -> {
+                          x0 = e.x; y0 = e.y; x1 = e.x; y1 = e.y
+                          has = true
+                          invalidate()
+                      }
+                      MotionEvent.ACTION_MOVE -> {
+                          x1 = e.x; y1 = e.y
+                          invalidate()
+                      }
+                      MotionEvent.ACTION_UP -> {
+                          x1 = e.x; y1 = e.y
+                          val loc = IntArray(2)
+                          getLocationOnScreen(loc)
+                          val r = Rect(
+                              minOf(x0, x1).toInt() + loc[0],
+                              minOf(y0, y1).toInt() + loc[1],
+                              maxOf(x0, x1).toInt() + loc[0],
+                              maxOf(y0, y1).toInt() + loc[1]
+                          )
+                          onDone(r)
+                      }
+                      MotionEvent.ACTION_CANCEL -> onDone(null)
+                  }
+                  return true
+              }
+          }
+          EOF
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ScreenFreezer-v2-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
